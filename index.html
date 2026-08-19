@@ -112,13 +112,13 @@
     <script>
       const SUPABASE_URL = "SUPABASE_URL";
       const SUPABASE_ANON_KEY = "SUPABASE_ANON_KEY";
-      const UPI_ID = "your-upi-id@bank";
+      const UPI_ID = "7416952126@ybl";
       const SHOP_ID = "SHOP_ID";
       const BUCKET = "print-uploads";
 
-      const PRICING = {
-        bw: { single: 2, double: 3 },
-        color: { single: 5, double: 8 },
+      const DEFAULT_PRICING = {
+        bw: { single: 1.5, double: 2.5 },
+        color: { single: 5.0, double: 8.0 },
       };
 
       const { createClient } = supabase;
@@ -147,6 +147,11 @@
       let currentPageCount = 0;
       let currentOrderId = null;
       let currentChannel = null;
+      let currentUpiId = UPI_ID;
+      let currentPricing = {
+        bw: { ...DEFAULT_PRICING.bw },
+        color: { ...DEFAULT_PRICING.color },
+      };
 
       function setMessage(text, type = "info") {
         const colors = {
@@ -163,7 +168,7 @@
         const colorMode = colorModeEl.value;
         const sideMode = sideModeEl.value;
         const sheets = sideMode === "double" ? Math.ceil(currentPageCount / 2) : currentPageCount;
-        const rate = PRICING[colorMode][sideMode];
+        const rate = Number(currentPricing[colorMode]?.[sideMode]) || 0;
         const total = sheets * rate * copies;
 
         pageCountEl.textContent = String(currentPageCount);
@@ -172,6 +177,37 @@
         totalEl.textContent = `₹${total.toFixed(2)}`;
 
         return { copies, sheets, rate, total, colorMode, sideMode };
+      }
+
+      function getValidRate(value, fallback) {
+        const rate = Number(value);
+        return Number.isFinite(rate) && rate > 0 ? rate : fallback;
+      }
+
+      async function loadShopConfig() {
+        try {
+          const { data } = await sb.from("shops").select("*").eq("id", SHOP_ID).maybeSingle();
+          if (!data) return;
+
+          currentUpiId = data.upi_id || currentUpiId;
+          currentPricing = {
+            bw: {
+              single: getValidRate(data.bw_single_rate, DEFAULT_PRICING.bw.single),
+              double: getValidRate(data.bw_double_rate, DEFAULT_PRICING.bw.double),
+            },
+            color: {
+              single: getValidRate(data.color_single_rate, DEFAULT_PRICING.color.single),
+              double: getValidRate(data.color_double_rate, DEFAULT_PRICING.color.double),
+            },
+          };
+          calculatePricing();
+        } catch (_) {
+          currentPricing = {
+            bw: { ...DEFAULT_PRICING.bw },
+            color: { ...DEFAULT_PRICING.color },
+          };
+          calculatePricing();
+        }
       }
 
       async function detectPageCount() {
@@ -333,9 +369,24 @@
 
       confirmPaymentBtn.addEventListener("click", markPaymentComplete);
 
-      [imagesInput, pdfInput, colorModeEl, sideModeEl, copiesEl].forEach((el) => {
-        el.addEventListener("change", detectPageCount);
+      imagesInput.addEventListener("change", () => {
+        if (imagesInput.files.length > 0 && pdfInput.files[0]) {
+          pdfInput.value = "";
+        }
+        detectPageCount();
       });
+
+      pdfInput.addEventListener("change", () => {
+        if (pdfInput.files[0] && imagesInput.files.length > 0) {
+          imagesInput.value = "";
+        }
+        detectPageCount();
+      });
+
+      colorModeEl.addEventListener("change", calculatePricing);
+      sideModeEl.addEventListener("change", calculatePricing);
+      copiesEl.addEventListener("change", calculatePricing);
+      copiesEl.addEventListener("input", calculatePricing);
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -344,6 +395,7 @@
           submitBtn.disabled = true;
           setMessage("Preparing document...");
 
+          await detectPageCount();
           const pricing = calculatePricing();
           if (currentPageCount <= 0) {
             throw new Error("No printable pages detected.");
@@ -388,9 +440,7 @@
           currentOrderId = order.id;
           await trackOrder(currentOrderId);
 
-          const upiUrl = `upi://pay?pa=${encodeURIComponent(UPI_ID)}&am=${pricing.total.toFixed(2)}&tn=${encodeURIComponent(
-            `PRINT-${currentOrderId}`
-          )}`;
+          const upiUrl = `upi://pay?pa=${currentUpiId}&am=${pricing.total.toFixed(2)}&tn=PRINT-${currentOrderId}`;
           setMessage("Order created. Redirecting to UPI app...", "success");
           window.location.href = upiUrl;
         } catch (error) {
@@ -400,6 +450,7 @@
         }
       });
 
+      loadShopConfig();
       detectPageCount();
     </script>
   </body>
